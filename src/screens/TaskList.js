@@ -3,12 +3,16 @@ import { StatusBar } from 'expo-status-bar'
 import React, {Component} from 'react'
 
 import {FontAwesome} from '@expo/vector-icons'
+import axios from 'axios'
 import AsyncStorage from '@react-native-async-storage/async-storage'
-
 import moment from 'moment'
 import 'moment/locale/pt-br'
 
+import { server, showError} from '../common'
 import todayImage from '../../assets/imgs/today.jpg'
+import tomorrow from '../../assets/imgs/tomorrow.jpg'
+import week from '../../assets/imgs/week.jpg'
+import month from '../../assets/imgs/month.jpg'
 import Task from '../components/Task'
 import commonStyles from '../commonStyles'
 import AddTask from './AddTask'
@@ -28,15 +32,27 @@ export default class TaskList extends Component {
 
  componentDidMount = async () => {
    const stateString =  await AsyncStorage.getItem('tasksState')
-   const state = JSON.parse(stateString) || initialState
-   this.setState(state)
+   const savedState = JSON.parse(stateString) || initialState
+   this.setState({
+     showDoneTasks: savedState.showDoneTasks
+   }, this.filterTasks)
+   this.loadTasks()
+ }
+
+ loadTasks = async () => {
+  try{
+    const maxDate = moment()
+      .add({ days: this.props.daysAhead})
+      .format('YYYY-MM-DD 23:59:59')
+    const res = await axios.get(`${server}/tasks?date=${maxDate}`)
+    this.setState({tasks: res.data }, this.filterTasks)
+   } catch(e){
+      showError(e)
+   }
  }
 
 
-
- toggleFilter = () => {
-   this.setState({ showDoneTasks: !this.state.showDoneTasks}, this.filterTasks )
- }
+ toggleFilter = () =>  this.setState({ showDoneTasks: !this.state.showDoneTasks}, this.filterTasks )
 
  filterTasks = () => {
    let visibleTasks = null
@@ -48,60 +64,88 @@ export default class TaskList extends Component {
    }
  
    this.setState({ visibleTasks })
+   AsyncStorage.setItem('tasksState', JSON.stringify({
+    showDoneTasks: this.state.showDoneTasks
+   }))
  }
 
- toggleTask = taskId => {
+ toggleTask = async taskId => {
+   
+  try {
+    await axios.put(`${server}/tasks/${taskId}/toggle`)
+    this.loadTasks()
+  } catch(e){
+    showError(e)
+  }
 
-  const tasks = [...this.state.tasks]
-  tasks.forEach( task =>{
-    if(task.id === taskId){
-      task.doneAt = task.doneAt ? null : Date.now()
-    }    
-  })
-  this.setState({tasks}, this.filterTasks)
-  AsyncStorage.setItem('tasksState', JSON.stringify(this.state))
 }
 
-  addTask = newTask =>{
+  addTask = async newTask =>{
     if(!newTask.desc || !newTask.desc.trim()){
       Alert.alert('Dados Inválidos', 'Descrição não informada!')
       return
     }
-    const tasks = [...this.state.tasks]
-    tasks.push({
-      id: Math.random(),
-      desc: newTask.desc,
-      estimateAt: newTask.date,
-      doneAt: null
-    })
 
-    this.setState({ tasks, showAddTask: false }, this.filterTasks)
+    try {
+      await axios.post(`${server}/tasks`, {
+        desc: newTask.desc,
+        estimateAt: newTask.date
+      })
+      this.setState({ showAddTask : false }, this.loadTasks)
+    } catch(e){
+      showError(e)
+    }
+  }
+
+  deleteTask = async taskId => {
+
+    try {
+      await axios.delete(`${server}/tasks/${taskId}`)
+      this.loadTasks()
+    } catch(e){
+      showError(e)
+    }
 
   }
 
-  deleteTask = id => {
-    const tasks = this.state.tasks.filter(task => task.id !== id)
-    this.setState({tasks}, this.filterTasks)
-    AsyncStorage.setItem('tasksState', JSON.stringify(this.state))
+  getImage = () => {
+    switch(this.props.daysAhead){
+      case 0: return todayImage
+      case 1: return tomorrow
+      case 7: return week
+      default: return month
+    }
   }
 
-
+  getColor = () => {
+    switch(this.props.daysAhead){
+      case 0: return commonStyles.colors.today
+      case 1: return commonStyles.colors.tomorrow
+      case 7: return commonStyles.colors.week
+      default: return commonStyles.colors.month
+    }
+  }
 
   render() {
     const today = moment().locale('pt-br').format('ddd, D [de] MMMM')
     return(
       <View style={styles.container}>
       <AddTask isVisible={this.state.showAddTask} onSave={this.addTask} onCancel={() => this.setState({ showAddTask: false })}/>
-      <ImageBackground style={styles.background} source={todayImage}>
+      <ImageBackground style={styles.background} source={this.getImage( )}>
         <View style={styles.iconBar}>
+          <TouchableOpacity
+            onPress={() => this.props.navigation.openDrawer()}
+          >
+              <FontAwesome name='bars' size={20 } color={commonStyles.colors.secondary} />
+          </TouchableOpacity>
           <TouchableOpacity
             onPress={() => this.toggleFilter()}
           >
-              <FontAwesome name={ this.state.showDoneTasks ? 'eye' : 'eye-slash'} size={40} color={commonStyles.colors.secondary} />
+              <FontAwesome name={ this.state.showDoneTasks ? 'eye' : 'eye-slash'} size={20 } color={commonStyles.colors.secondary} />
           </TouchableOpacity>
         </View>
         <View style={styles.titleBar}>
-            <Text style={styles.title}>Hoje</Text>
+            <Text style={styles.title}>{this.props.title}</Text>
             <Text style={styles.subtitle}>{today}</Text>
         </View>
       </ImageBackground>
@@ -112,7 +156,7 @@ export default class TaskList extends Component {
           renderItem={(task) => <Task {...task.item} toggleTask={this.toggleTask} onDelete={this.deleteTask}/>} 
         />
       </View>
-      <TouchableOpacity activeOpacity={0.7} style={styles.addButton} onPress={() => this.setState({showAddTask: true})}>
+      <TouchableOpacity activeOpacity={0.7} style={[styles.addButton, {backgroundColor: this.getColor()}]} onPress={() => this.setState({showAddTask: true})}>
         <FontAwesome name='plus' size={20} color={commonStyles.colors.secondary}/>
       </TouchableOpacity>
     </View>
@@ -152,8 +196,8 @@ const styles = StyleSheet.create({
   iconBar: {
     flexDirection: 'row',
     marginHorizontal: 20,
-    justifyContent: 'flex-end',
-    marginTop: 20
+    justifyContent: 'space-between',
+    marginTop: 25
 
   },
   addButton:{
@@ -164,7 +208,6 @@ const styles = StyleSheet.create({
     bottom:30,
     width:50,
     height:50,
-    borderRadius:25,
-    backgroundColor: commonStyles.colors.today
+    borderRadius:25
   }
 })
